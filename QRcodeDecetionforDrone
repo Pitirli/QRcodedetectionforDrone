@@ -1,0 +1,122 @@
+from pymavlink import mavutil
+import cv2
+import numpy as np
+
+
+connection = mavutil.mavlink_connection('tcp:localhost:5762')
+connection.wait_heartbeat()
+
+
+mode_map = {
+    "LOITER": 5,
+    "AUTO": 3,
+    "RTL": 6,
+    "MANUAL": 0,
+    "GUIDED": 4
+}
+
+def set_mode(mode):
+    if mode not in mode_map:
+        print(f"Geçersiz mod: {mode}")
+        return
+
+    mode_id = mode_map[mode]
+    connection.mav.command_long_send(
+        connection.target_system,
+        connection.target_component,
+        mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+        0,
+        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+        mode_id, 0, 0, 0, 0, 0, 0
+    )
+    msg = connection.recv_match(type='COMMAND_ACK', blocking=True)
+    print(msg)
+
+def move_drone(north, east, altitude):
+    connection.mav.set_position_target_local_ned_send(
+        0,
+        connection.target_system,
+        connection.target_component,
+        mavutil.mavlink.MAV_FRAME_LOCAL_NED,
+        0b110111111000,
+        north, east, -altitude,
+        0, 0, 0,
+        0, 0, 0,
+        0, 0
+    )
+
+def land_drone():
+    connection.mav.command_long_send(connection.target_system, connection.target_component,
+                                     mavutil.mavlink.MAV_CMD_NAV_LAND, 0, 0, 0, 0, 0, 0, 0, 0)
+    msg = connection.recv_match(type='COMMAND_ACK', blocking=True)
+    print(msg)
+
+def track_and_move():
+    cap = cv2.VideoCapture(0)
+    frame_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    frame_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    qr_code_detector = cv2.QRCodeDetector()
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        decoded_text, points, _ = qr_code_detector.detectAndDecode(frame)
+        if points is not None and len(points) == 4:
+            points = points.reshape(-1, 2)
+
+
+            cv2.rectangle(frame, tuple(points[0]), tuple(points[2]), (255, 0, 255), 2)
+
+            cx = int(np.mean(points[:, 0]))
+            cy = int(np.mean(points[:, 1]))
+
+            move_x = (cx - frame_width / 2) / frame_width
+            move_y = (cy - frame_height / 2) / frame_height
+
+            scale_factor = 5
+            north = move_y * scale_factor
+            east = move_x * scale_factor
+            altitude = 10
+            print(f"Drone'u Kuzey: {north}, Doğu: {east}, İrtifa: {altitude} konumuna taşı")
+            move_drone(north, east, altitude)
+
+        else:
+            print("QR kodu algılanamadı veya geçersiz QR kodu.")
+
+        cv2.imshow("Kare", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+while True:
+    girdi = input("Bir Girdi Verin (1=Arm, 2=TakeOff, 3=Land, 4=Takip Et, 5=Mod Değiştir): ")
+
+    if girdi == "1":
+        connection.mav.command_long_send(connection.target_system, connection.target_component,
+                                         mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1, 0, 0, 0, 0, 0, 0)
+        msg = connection.recv_match(type='COMMAND_ACK', blocking=True)
+        print(msg)
+
+    elif girdi == "2":
+        connection.mav.command_long_send(connection.target_system, connection.target_component,
+                                         mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 0, 0, 0, 0, 0, 10)
+        msg = connection.recv_match(type='COMMAND_ACK', blocking=True)
+        print(msg)
+
+    elif girdi == "3":
+        land_drone()
+
+    elif girdi == "4":
+        track_and_move()
+
+    elif girdi == "5":
+        mode = input("Bir Mod Verin (LOITER, AUTO, RTL, MANUAL, GUIDED): ").upper()
+        set_mode(mode)
+
+    else:
+        print("Geçerli bir girdi verin: 1, 2, 3, 4 veya 5.")
